@@ -29,7 +29,9 @@ class login extends \core\AbstractAction {
 		}
 
     function tryLogin($type) {
-        $session = new \core\Session($this->db, SESSION_NAME);
+
+        new \core\Session($this->db, SESSION_NAME);
+
         $exception = null;
 
         $auth = new \core\Authentication();
@@ -56,64 +58,83 @@ class login extends \core\AbstractAction {
                 session_start();
 
                 $id = $this->db->sanitize((string)$userProfile->identifier);
-                $displayName = $this->db->sanitize($userProfile->displayName);
-                $email = $this->db->sanitize($userProfile->email);
+                $displayName = $this->db->sanitize((string)$userProfile->displayName);
+                $email = $this->db->sanitize((string)$userProfile->email);
 
                 $sessionId = session_id();
                 $sessionData = idx($_SESSION, 'data');
                 $userId = null;
 
                 // Check if the user had a temporary session first.
-                if (!is_null($sessionData)) {
+                if (null !== $sessionData) {
                     $sessionData = (object)$sessionData;
-                    if ($sessionData->type == "temporary") {
+                    if ($sessionData->type === 'temporary') {
                         // Migrate all the temp users favorites / ratings / patterns to the correct user
                         // Then delete the old user / session.
-                        $existingUser = $this->db->query("SELECT * FROM users WHERE email='{$email}' && type='{$type}'", true);
+                        $existingUser = $this->db->query("SELECT * FROM users WHERE email='{$email}' AND type='{$type}'", true);
 
                         if (!is_null($existingUser)) {
-                            $temporaryUserId = $sessionData->userId;
-                            $existingUserId = $existingUser->id;
+                            $temporaryUserId = (int)$sessionData->userId;
+                            $existingUserId = (int)$existingUser->id;
                             $userId = $existingUserId;
 
                             $this->db->begin();
                             //Migrate temp users patterns to the exiting user.
-                            $this->db->query("UPDATE patterns SET owner='{$existingUserId}' WHERE owner='{$temporaryUserId}'");
+                            $this->db->query(sprintf('UPDATE patterns SET owner=%d WHERE owner=%d', $existingUserId, $temporaryUserId));
 
-                            // Delete any favorites patterns that the existing user has already favorited.
-                            $this->db->query("DELETE IGNORE
-                                                FROM favorites
-                                                WHERE userId='{$temporaryUserId}'
-                                                && patternId IN (SELECT patternId FROM (SELECT patternId FROM favorites WHERE userId='{$existingUserId}') as child)
-                                            ");
+                            // Delete any favorites patterns that the existing user has already favored.
+                            $this->db->query(
+                                sprintf(
+                                    'DELETE IGNORE
+                                        FROM favorites
+                                        WHERE userId=%d
+                                        AND patternId IN (SELECT patternId FROM (SELECT patternId FROM favorites WHERE userId=%d) as child)',
+                                    $temporaryUserId,
+                                    $existingUserId
+                                )
+                            );
 
                             // Assign remaining favorites to the existing user.
-                            $this->db->query("UPDATE favorites
-                                                SET userId='{$existingUserId}'
-                                                WHERE userId='{$temporaryUserId}'
-                                            ");
+                            $this->db->query(
+                                sprintf(
+                                    'UPDATE favorites SET userId=%d WHERE userId=%d',
+                                    $existingUserId,
+                                    $temporaryUserId
+                                )
+                            );
 
                             // Delete any ratings that the exiting user already made.
-                            $this->db->query("DELETE IGNORE
-                                                FROM userRatings
-                                                WHERE userId='{$temporaryUserId}'
-                                                && patternId IN (SELECT patternId FROM (SELECT patternId FROM userRatings WHERE userId='{$existingUserId}') as child)
-                                            ");
+                            $this->db->query(
+                                sprintf(
+                                    'DELETE IGNORE
+                                        FROM userRatings
+                                        WHERE userId=%d
+                                        AND patternId IN (SELECT patternId FROM (SELECT patternId FROM userRatings WHERE userId=%d) as child)',
+                                    $temporaryUserId,
+                                    $existingUserId
+                                )
+                            );
 
                             // Assign remaining ratings to the existing user.
-                            $this->db->query("UPDATE userRatings SET userId='{$existingUserId}' WHERE userId='{$temporaryUserId}'");
+                            $this->db->query(
+                                sprintf(
+                                    'UPDATE userRatings SET userId=%d WHERE userId=%d',
+                                    $existingUserId,
+                                    $temporaryUserId
+                                )
+                            );
 
                             // Remove temporary user.
-                            $this->db->query("DELETE IGNORE FROM users WHERE id='{$temporaryUserId}'");
+                            $this->db->query(sprintf('DELETE IGNORE FROM users WHERE id=%d', $temporaryUserId));
 
                             // Remove any sessions for the exiting user (we'll migrate the new one over below)
-                            $this->db->query("DELETE IGNORE FROM sessions WHERE userId='$existingUserId'");
+                            $this->db->query(sprintf('DELETE IGNORE FROM sessions WHERE userId=%d', $existingUserId));
 
                             $this->db->commit();
                         } else {
                             // Update current temp user to a full fledged user.
-                            $userId = $sessionData->userId;
-                            $this->db->query("UPDATE users SET email='$email', type='$type' WHERE id='$sessionData->userId'");
+                            $userId = (int)$sessionData->userId;
+                            $this->db->query(sprintf("UPDATE users SET email='$email', type='$type' WHERE id=%d", $userId));
                         }
 
                         // Sessions will update below.
@@ -126,13 +147,21 @@ class login extends \core\AbstractAction {
                     }
                 }
 
-                $this->db->query("INSERT INTO users (email, username, authorName, type, oauthUserId, lastLogin)
-                                    VALUES ('$email', '$displayName', '$displayName', '$type', '$id' ,'NOW()')
+                $this->db->query(
+                    sprintf(
+                        "INSERT INTO users (email, username, authorName, type, oauthUserId, lastLogin)
+                                    VALUES ('%s', '%s', '%s', '%s', '$id' , 'NOW()')
                                     ON DUPLICATE KEY UPDATE `username`='$displayName', `oauthUserId`='$id', `lastLogin`=NOW()
-                                ");
+                                ",
+                        $email,
+                        $displayName,
+                        $displayName,
+                        $type
+                    )
+                );
 
                 $accessToken = serialize($adapter->getAccessToken());
-                $userIdData = $this->db->query("SELECT * FROM users WHERE email='$email' && type='$type'", true);
+                $userIdData = $this->db->query("SELECT * FROM users WHERE email='$email' AND type='$type'", true);
 
                 $tokenQuery = "UPDATE sessions SET accessToken='$accessToken', type='$type', userId='$userIdData->id' WHERE id='$sessionId'";
                 $this->db->query($tokenQuery);
@@ -154,8 +183,8 @@ class login extends \core\AbstractAction {
     }
 
     public function getSchema() {
-				return array(
-						'type' => array('type'=>self::ENUM, 'values'=>$this->getUserAccountTypes(), 'required'=>true)
-				);
+        return array(
+            'type' => array('type' => self::ENUM, 'values' => $this->getUserAccountTypes(), 'required' => true)
+        );
     }
 }
